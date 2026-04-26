@@ -10,146 +10,173 @@ app.use(express.json({ limit: '2mb' }));
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const LINE_PUSH_TO_ID = process.env.LINE_PUSH_TO_ID;
 
-function formatOrderMessage(order = {}) {
-  const orderNo = order.orderNo || order.order_no || order.id || '未提供';
-  const mode = order.mode || order.orderMode || order.pickupType || order.pickup_type || '未提供';
-  const name = order.customerName || order.customer_name || order.name || '未填';
-  const phone = order.phone || order.customerPhone || order.customer_phone || '未填';
-  const address = order.address || order.deliveryAddress || order.delivery_address || '';
-  const note = order.note || order.memo || '';
-  const total = order.total || order.totalAmount || order.total_amount || 0;
-  const reservationText = order.reservationText || order.reservation_time || order.pickupTime || order.pickup_time || order.scheduleText || '';
-
-  let itemsText = '未提供商品明細';
-  const rawItems = order.items || order.orderItems || order.order_data?.items || [];
-  if (Array.isArray(rawItems) && rawItems.length) {
-    itemsText = rawItems.map((item, index) => {
-      if (typeof item === 'string') return `${index + 1}. ${item}`;
-      const itemName = item.name || item.title || item.productName || '商品';
-      const qty = item.qty || item.quantity || 1;
-      const price = item.price || item.subtotal || '';
-      const meta = item.meta || item.detail || item.desc || item.description || '';
-      return `${index + 1}. ${itemName} × ${qty}${price !== '' ? `｜$${price}` : ''}${meta ? `\n   ${meta}` : ''}`;
-    }).join('\n');
-  }
-
-  return [
-    '🍧 熊芭比新訂單通知',
-    `訂單編號：${orderNo}`,
-    `取餐方式：${mode}`,
-    reservationText ? `時間：${reservationText}` : '時間：立即製作',
-    '',
-    '【顧客資料】',
-    `姓名：${name}`,
-    `電話：${phone}`,
-    address ? `地址：${address}` : '',
-    '',
-    '【商品明細】',
-    itemsText,
-    '',
-    `總金額：${total} 元`,
-    note ? `備註：${note}` : ''
-  ].filter(Boolean).join('\n');
+function safeText(v, fallback = '未填') {
+  if (v === undefined || v === null || v === '') return fallback;
+  return String(v);
 }
 
-async function pushLineText(text, to = LINE_PUSH_TO_ID) {
-  if (!LINE_CHANNEL_ACCESS_TOKEN) {
-    throw new Error('缺少 LINE_CHANNEL_ACCESS_TOKEN');
+function money(n) {
+  const num = Number(n || 0);
+  return Number.isFinite(num) ? `${num.toLocaleString('zh-TW')} 元` : `${safeText(n, '0')} 元`;
+}
+
+function normalizeItems(body) {
+  const raw = body.items || body.orderItems || body.order_data?.items || body.orderData?.items || [];
+  if (Array.isArray(raw)) return raw;
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
-  if (!to) {
-    throw new Error('缺少 LINE_PUSH_TO_ID');
+}
+
+function itemLine(item) {
+  if (typeof item === 'string') return `🍧 ${item}`;
+  const name = item.name || item.title || item.productName || item.item_name || '商品';
+  const qty = item.qty || item.quantity || item.count || 1;
+  const price = item.price || item.total || item.subtotal;
+  const parts = [`🍧 ${name} × ${qty}`];
+  if (price !== undefined && price !== null && price !== '') parts.push(`｜${money(price)}`);
+
+  const extras = [];
+  if (item.flavors) extras.push(`口味：${Array.isArray(item.flavors) ? item.flavors.join('、') : item.flavors}`);
+  if (item.toppings) extras.push(`加料：${Array.isArray(item.toppings) ? item.toppings.join('、') : item.toppings}`);
+  if (item.addons) extras.push(`加購：${Array.isArray(item.addons) ? item.addons.join('、') : item.addons}`);
+  if (item.note) extras.push(`備註：${item.note}`);
+
+  return parts.join('') + (extras.length ? `\n   ${extras.join('\n   ')}` : '');
+}
+
+function buildMessage(body) {
+  const order = body.order || body.order_data || body.orderData || body;
+  const customer = order.customer || order.customer_name || order.name || order.userName || '顧客';
+  const phone = order.phone || order.tel || order.customer_phone || '';
+  const mode = order.mode || order.order_type || order.pickupType || order.type || '訂單';
+  const address = order.address || order.delivery_address || '';
+  const note = order.note || order.memo || order.remark || '';
+  const total = order.total || order.total_amount || order.amount || body.total || 0;
+  const orderNo = order.order_no || order.orderNo || order.id || body.id || '';
+  const reserveTime = order.reserve_time || order.pickup_time || order.delivery_time || order.scheduleTime || order.scheduled_time || '';
+  const isPreorder = !!reserveTime && !String(reserveTime).includes('立即');
+  const items = normalizeItems(order).length ? normalizeItems(order) : normalizeItems(body);
+  const itemsText = items.length ? items.map(itemLine).join('\n') : '🍧 商品內容請至後台查看';
+
+  const lines = [];
+  lines.push('🧸 熊芭比來單囉！');
+  lines.push('━━━━━━━━━━━━━━');
+  if (orderNo) lines.push(`🧾 訂單編號：${orderNo}`);
+  lines.push(`👤 顧客：${safeText(customer)}`);
+  if (phone) lines.push(`📞 電話：${phone}`);
+  lines.push(`🛍 方式：${safeText(mode)}`);
+  if (address) lines.push(`📍 地址：${address}`);
+  lines.push(`🕒 出單：${isPreorder ? '⏰ 預約單 ' + reserveTime : '🔥 立即製作'}`);
+  lines.push('');
+  lines.push('【訂購內容】');
+  lines.push(itemsText);
+  lines.push('');
+  lines.push(`💰 總金額：${money(total)}`);
+  if (note) {
+    lines.push('');
+    lines.push(`📝 備註：${note}`);
+  }
+  lines.push('━━━━━━━━━━━━━━');
+  lines.push('請記得確認後台訂單狀態 🍧');
+  return lines.join('\n');
+}
+
+async function pushLineText(text) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !LINE_PUSH_TO_ID) {
+    throw new Error('LINE env missing: LINE_CHANNEL_ACCESS_TOKEN or LINE_PUSH_TO_ID');
   }
 
-  const response = await fetch('https://api.line.me/v2/bot/message/push', {
+  const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
     },
     body: JSON.stringify({
-      to,
-      messages: [{ type: 'text', text }]
-    })
+      to: LINE_PUSH_TO_ID,
+      messages: [{ type: 'text', text }],
+    }),
   });
 
-  const responseText = await response.text();
-  if (!response.ok) {
-    const err = new Error(`LINE push failed: ${response.status} ${responseText}`);
-    err.status = response.status;
-    err.detail = responseText;
-    throw err;
+  const resultText = await res.text();
+  if (!res.ok) {
+    throw new Error(`LINE push failed ${res.status}: ${resultText}`);
   }
-
-  return responseText;
+  return resultText || 'ok';
 }
 
 app.get('/', (req, res) => {
   res.json({
     ok: true,
-    service: '熊芭比 API',
-    version: '2.0.0',
-    routes: ['GET /health', 'POST /webhook', 'POST /api/line/push-order', 'GET /api/line/test']
+    name: '熊芭比 Render API',
+    version: 'v3 LINE notify beauty',
+    routes: ['/webhook', '/api/line/push-order', '/api/line/test'],
+    lineTokenReady: !!LINE_CHANNEL_ACCESS_TOKEN,
+    linePushTargetReady: !!LINE_PUSH_TO_ID,
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
-    message: '熊芭比 API 運作中',
-    lineTokenReady: Boolean(LINE_CHANNEL_ACCESS_TOKEN),
-    linePushToReady: Boolean(LINE_PUSH_TO_ID)
-  });
-});
-
-// LINE Developers Verify 會 POST 到這裡。必須回 200，不能 404。
 app.post('/webhook', (req, res) => {
+  console.log('LINE webhook received:', JSON.stringify(req.body));
   try {
     const events = req.body?.events || [];
-    console.log('LINE webhook received:', JSON.stringify(req.body));
-
     for (const event of events) {
       const userId = event?.source?.userId;
       const groupId = event?.source?.groupId;
       const roomId = event?.source?.roomId;
-
       if (userId) console.log('LINE USER ID:', userId);
       if (groupId) console.log('LINE GROUP ID:', groupId);
       if (roomId) console.log('LINE ROOM ID:', roomId);
     }
-
-    return res.status(200).json({ ok: true });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('Webhook parse error:', err);
   }
+  res.status(200).send('OK');
 });
 
 app.get('/api/line/test', async (req, res) => {
   try {
-    await pushLineText('🍧 熊芭比 LINE 測試成功！新訂單通知已連線。');
-    res.json({ ok: true, message: 'LINE 測試成功' });
-  } catch (error) {
-    console.error('LINE test error:', error.message, error.detail || '');
-    res.status(500).json({ ok: false, message: error.message, detail: error.detail || null });
+    const text = '🧸 熊芭比 LINE 通知測試成功！\n\n你的訂單通知系統已經可以正常推播囉 🍧';
+    const result = await pushLineText(text);
+    res.json({ ok: true, message: 'LINE test sent', result });
+  } catch (err) {
+    console.error('LINE test failed:', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/line/test', async (req, res) => {
+  try {
+    const text = req.body?.text || '🧸 熊芭比 LINE 通知測試成功！\n\n你的訂單通知系統已經可以正常推播囉 🍧';
+    const result = await pushLineText(text);
+    res.json({ ok: true, message: 'LINE test sent', result });
+  } catch (err) {
+    console.error('LINE test failed:', err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 app.post('/api/line/push-order', async (req, res) => {
   try {
-    const order = req.body || {};
-    const message = order.message || order.text || formatOrderMessage(order);
-    await pushLineText(message, order.to || LINE_PUSH_TO_ID);
-    res.json({ ok: true, message: 'LINE 訂單通知已送出' });
-  } catch (error) {
-    console.error('LINE push-order error:', error.message, error.detail || '');
-    res.status(500).json({ ok: false, message: error.message, detail: error.detail || null });
+    const text = buildMessage(req.body || {});
+    console.log('美化訂單通知內容:\n' + text);
+    const result = await pushLineText(text);
+    res.json({ ok: true, message: 'LINE order notification sent', result });
+  } catch (err) {
+    console.error('LINE order push failed:', err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`熊芭比 API v2.0 running on port ${PORT}`);
+  console.log(`熊芭比 API v3 running on port ${PORT}`);
   console.log('Webhook route ready: POST /webhook');
   console.log('LINE push route ready: POST /api/line/push-order');
-  console.log('LINE token ready:', Boolean(LINE_CHANNEL_ACCESS_TOKEN));
-  console.log('LINE push target ready:', Boolean(LINE_PUSH_TO_ID));
+  console.log('LINE test route ready: GET/POST /api/line/test');
+  console.log('LINE token ready:', !!LINE_CHANNEL_ACCESS_TOKEN);
+  console.log('LINE push target ready:', !!LINE_PUSH_TO_ID);
 });
