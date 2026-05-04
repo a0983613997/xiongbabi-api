@@ -23,7 +23,7 @@ function requireLineToken(res) {
   return true;
 }
 
-// ====== 發送 LINE 訊息 ======
+// ====== 發送 LINE ======
 async function pushLineMessage(to, text) {
   if (!to) return { skipped: true };
 
@@ -35,12 +35,7 @@ async function pushLineMessage(to, text) {
     },
     body: JSON.stringify({
       to,
-      messages: [
-        {
-          type: "text",
-          text: text
-        }
-      ]
+      messages: [{ type: "text", text }]
     })
   });
 
@@ -55,7 +50,7 @@ app.get("/", (req, res) => {
   res.json({
     ok: true,
     name: "熊芭比 LINE API",
-    version: "v16.4 full-server-ready"
+    version: "v16.5 webhook-ready"
   });
 });
 
@@ -64,51 +59,37 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// ====== 🧪 測試用 API（你現在要用這個） ======
+// ====== 測試訂單（你現在用這個）=====
 app.post("/api/order", async (req, res) => {
   try {
     if (!requireLineToken(res)) return;
 
     const { userId, items } = req.body;
 
-    const itemText = (items || [])
-      .map(i => `${i.name} $${i.price}`)
-      .join("\n");
-
-    const text = `🍧 熊芭比收到新訂單！
-
-${itemText}
-
-謝謝您的訂購 ❤️`;
+    const text = `🍧 熊芭比收到訂單！
+${(items || []).map(i => `${i.name} $${i.price}`).join("\n")}`;
 
     const results = {};
 
-    // 店家通知
+    // 店家
     if (LINE_PUSH_TO_ID) {
       results.owner = await pushLineMessage(LINE_PUSH_TO_ID, text);
     }
 
-    // 客人通知
+    // 客人
     if (userId) {
       results.customer = await pushLineMessage(userId, text);
     }
 
-    res.json({
-      ok: true,
-      success: true,
-      results
-    });
+    res.json({ ok: true, results });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({
-      ok: false,
-      message: err.message
-    });
+    res.status(500).json({ ok: false });
   }
 });
 
-// ====== 正式送單（進階版） ======
+// ====== 正式送單 ======
 app.post("/api/line/push-order", async (req, res) => {
   try {
     if (!requireLineToken(res)) return;
@@ -120,7 +101,7 @@ app.post("/api/line/push-order", async (req, res) => {
     if (LINE_PUSH_TO_ID) {
       results.owner = await pushLineMessage(
         LINE_PUSH_TO_ID,
-        message || "🍧 熊芭比收到新訂單"
+        message || "🍧 新訂單"
       );
     }
 
@@ -163,7 +144,22 @@ app.post("/api/line/order-ready", async (req, res) => {
   }
 });
 
-// ====== 啟動 ======
+// ====== 🔥 Webhook（抓 userId 用）=====
+app.post("/webhook", (req, res) => {
+  console.log("📩 LINE事件：", JSON.stringify(req.body, null, 2));
+
+  const events = req.body.events || [];
+
+  events.forEach(event => {
+    if (event.source && event.source.userId) {
+      console.log("👉 使用者ID：", event.source.userId);
+    }
+  });
+
+  res.sendStatus(200);
+});
+
+// ====== 啟動（一定最後）=====
 const port = process.env.PORT || 3000;
 
 app.listen(port, () => {
