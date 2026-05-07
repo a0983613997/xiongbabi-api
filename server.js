@@ -127,7 +127,76 @@ app.get('/', (req, res) => {
     endpoints: ['/health', '/api/health', '/api/ping', '/api/line/push-order', '/api/order-ready', '/api/line/test'],
   });
 });
+// 🍧 可取餐通知
+app.post("/api/line/order-ready", async (req, res) => {
+  try {
+    console.log("🍧 收到可取餐通知：", req.body);
 
+    const { order, customerMessage, userId, customerLineUserId } = req.body;
+
+    const targetUserId =
+      userId ||
+      customerLineUserId ||
+      order?.user_id ||
+      order?.customerLineUserId;
+
+    if (!targetUserId) {
+      console.log("❌ 缺少 LINE userId");
+      return res.status(400).json({
+        success: false,
+        error: "缺少 LINE userId"
+      });
+    }
+
+    const message =
+      customerMessage ||
+      `🍧 熊芭比通知\n您的訂單已完成，可以取餐囉～`;
+
+    const response = await fetch(
+      "https://api.line.me/v2/bot/message/push",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
+        },
+        body: JSON.stringify({
+          to: targetUserId,
+          messages: [
+            {
+              type: "text",
+              text: message
+            }
+          ]
+        })
+      }
+    );
+
+    const result = await response.text();
+
+    console.log("LINE 回傳：", result);
+
+    if (!response.ok) {
+      return res.status(500).json({
+        success: false,
+        error: result
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "可取餐通知成功"
+    });
+
+  } catch (err) {
+    console.error("❌ 可取餐通知失敗：", err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
 app.get('/health', (req, res) => res.status(200).send('OK'));
 app.get('/api/health', (req, res) => res.status(200).json({ ok: true, message: 'OK', time: nowText() }));
 app.get('/api/ping', (req, res) => res.status(200).json({ ok: true, message: 'pong', time: nowText() }));
@@ -176,7 +245,15 @@ app.post('/api/order-ready', async (req, res) => {
   try {
     const payload = req.body || {};
     const order = payload.order || payload;
-    const customerUserId = payload.userId || order.userId || order.lineUserId || order.customer?.lineUserId || order.customer?.userId;
+    const customerUserId =
+  payload.userId ||
+  payload.customerLineUserId ||
+  order.userId ||
+  order.lineUserId ||
+  order.customerLineUserId ||
+  order.user_id ||
+  order.customer?.lineUserId ||
+  order.customer?.userId;
 
     if (!customerUserId) {
       return res.status(400).json({ ok: false, success: false, message: '缺少客人的 LINE userId，無法推播可取餐通知' });
